@@ -1,8 +1,10 @@
 import numpy as np
 import pandas as pd
 import sqlalchemy
-from os import listdir
+import glob
+from os import listdir, walk
 from os.path import isfile, join
+from pathlib import Path
 
 CtrlTbl = 'PY_Control_XLS_Import'
 
@@ -46,36 +48,43 @@ for res in ResultSet:
     DestTbl = res[3]
     RowsToSkip = res[5]
     data_sheets = res[4]
-    TruncateOnLoad = res[6]
+    HeaderRow = res[6]
+    TruncateOnLoad = res[7]
     tbl_insert = None
     excl_sheets = []
     incl_sheets = []
-    if data_sheets[0:1] == "!":
+       
+    if data_sheets is None:
+        sheet_from = 1
+        sheet_to = 99999
+    elif str(data_sheets)[0:1] == "!":
         excl_sheets = data_sheets[1:len(data_sheets)].split(',')
-    if '-' in data_sheets:
+    elif '-' in str(data_sheets):
         from_to     =   data_sheets.split('-')
         sheet_from  =   int(from_to[0])
         sheet_to    =   int(from_to[1])
     else:
-        incl_sheets = data_sheets.split(',')
+        incl_sheets = (data_sheets).split(',')
   
     if (engine.dialect.has_table(engine.connect(), DestTbl)):
         tbl_insert = sqlalchemy.Table(DestTbl, meta, autoload=True, autoload_with=engine)
         if TruncateOnLoad == True:
             connection.execution_options(autocommit=True).execute("TRUNCATE TABLE [" + DestTbl + "];")
 
-    for filename in listdir(data_dir):
-        if (filename == data_file or data_file is None) and filename[-5:] == ".xlsx" and filename[0:1] != '~':
+    #for filename in listdir(data_dir):
+    #files = [y for x in walk(data_dir) for y in glob(join(x[0], '*.xlsx'))]
+    for file in Path(data_dir).glob('**/*.xlsx'):
+        if (file.name == data_file or data_file is None) and file.name[-5:] == ".xlsx" and file.name[0:1] != '~':
             if (engine.dialect.has_table(engine.connect(), DestTbl) and tbl_insert is None):
                 tbl_insert = sqlalchemy.Table(DestTbl, meta, autoload=True, autoload_with=engine)
-            fullpath = data_dir + "\\" + filename
-
-            xl = pd.ExcelFile(fullpath)
+            fullpath = str(file)
+            xl = pd.ExcelFile(fullpath,engine='openpyxl',)
             sheet_i = 1
             for sheet in xl.sheet_names:
                 if (len(excl_sheets) > 0 and sheet not in excl_sheets) or (len(incl_sheets) > 0 and sheet in incl_sheets) or (sheet_i >= sheet_from and sheet_i <= sheet_to):
-                    excel_df = pd.read_excel(fullpath, skiprows=RowsToSkip, sheet_name=sheet)
-                    excel_df['Meta_Filename'] = filename
+                    excel_df = None
+                    excel_df = pd.read_excel(fullpath, skiprows=RowsToSkip, sheet_name=sheet, header=HeaderRow,engine='openpyxl',)
+                    excel_df['Meta_Filename'] = str(file.parts[len(file.parts)-2]) + '\\' + file.name
                     excel_df['Meta_RowNumber'] = np.arange(excel_df.shape[0])
                     excel_df['Meta_Sheetname'] = sheet
                     outputdict = sqlcol(excel_df) 
@@ -100,18 +109,23 @@ for res in ResultSet:
                         try:
                             excel_df.to_sql(DestTbl, engine, if_exists='append', index=False , dtype = outputdict)
                         except BaseException as e:
+                            
                             b = e.args
                             col = b[0].split('(pymssql.ProgrammingError) (207, b"Invalid column name \'')[1].split('\'')[0]
-                            print(str(excel_df[col].dtype))
+                            try:
+                                col = int(col)
+                            except ValueError:
+                                col = col
+                            
                             if "int" in str(excel_df[col].dtype):
-                                res = engine.execute("ALTER TABLE ["+DestTbl+"] ADD "+col+" INT")
+                                res = engine.execute("ALTER TABLE ["+DestTbl+"] ADD ["+str(col)+"] INT")
                             if "float" in str(excel_df[col].dtype):
-                                res = engine.execute("ALTER TABLE ["+DestTbl+"] ADD "+col+" FLOAT")
+                                res = engine.execute("ALTER TABLE ["+DestTbl+"] ADD ["+str(col)+"] FLOAT")
                             if "datetime" in str(excel_df[col].dtype):
-                                res = engine.execute("ALTER TABLE ["+DestTbl+"] ADD "+col+" DATETIME")
+                                res = engine.execute("ALTER TABLE ["+DestTbl+"] ADD ["+str(col)+"] DATETIME")
                             if "object" in str(excel_df[col].dtype):
-                                res = engine.execute("ALTER TABLE ["+DestTbl+"] ADD "+col+" NVARCHAR("+str(4000)+")")
-                            print("Spalte " + col + " angelegt.")
+                                res = engine.execute("ALTER TABLE ["+DestTbl+"] ADD ["+str(col)+"] NVARCHAR("+str(4000)+")")
+                            print("Spalte " + str(col) + " angelegt.")
                         else: break
-                    print("Imported File: " + filename + "; Imported Sheet: " + sheet)
+                    print("Imported File: " + fullpath + "; Imported Sheet: " + sheet)
                 sheet_i = sheet_i + 1
